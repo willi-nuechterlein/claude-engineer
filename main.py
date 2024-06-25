@@ -1,4 +1,5 @@
 import os
+import fnmatch
 from anthropic import Anthropic
 from datetime import datetime
 import json
@@ -31,6 +32,9 @@ conversation_history = []
 # Global variable to store the working directory
 WORKING_DIR = ""
 
+# Global variable to store gitignore patterns
+GITIGNORE_PATTERNS = []
+
 # System prompt
 system_prompt = """
 You are Claude, an AI assistant powered by Anthropic's Claude-3.5-Sonnet model. You are an exceptional software developer with vast knowledge across multiple programming languages, frameworks, and best practices. Your capabilities include:
@@ -41,7 +45,7 @@ You are Claude, an AI assistant powered by Anthropic's Claude-3.5-Sonnet model. 
 4. Offering architectural insights and design patterns
 5. Staying up-to-date with the latest technologies and industry trends
 6. Reading and analyzing existing files in the specified working directory
-7. Listing files in the specified working directory
+7. Listing files in the specified working directory, respecting .gitignore rules if present
 
 When asked to create a project:
 - Always create new folders and files within the specified working directory.
@@ -55,14 +59,14 @@ When asked to make edits or improvements:
 
 Be sure to consider the type of project (e.g., Python, JavaScript, web application) when determining the appropriate structure and files to include.
 
-You can now read files and list the contents of the specified working directory. Use these capabilities when:
+You can now read files and list the contents of the specified working directory, respecting .gitignore rules if present. Use these capabilities when:
 - The user asks for edits or improvements to existing files
 - You need to understand the current state of the project
 - You believe reading a file or listing directory contents will be beneficial to accomplish the user's goal
 
 Always strive to provide the most accurate, helpful, and detailed responses possible. If you're unsure about something, admit it.
 
-Remember that all operations are restricted to the specified working directory and its subdirectories.
+Remember that all operations are restricted to the specified working directory and its subdirectories, and respect .gitignore rules if present.
 
 Answer the user's request using relevant tools (if they are available). Before calling a tool, do some analysis within \\<thinking>\\</thinking> tags. First, think about which of the provided tools is the relevant tool to answer the user's request. Second, go through each of the required parameters of the relevant tool and determine if the user has directly provided or given enough information to infer a value. When deciding if the parameter can be inferred, carefully consider all the context to see if it supports a specific value. If all of the required parameters are present or can be reasonably inferred, close the thinking tag and proceed with the tool call. BUT, if one of the values for a required parameter is missing, DO NOT invoke the function (not even with fillers for the missing params) and instead, ask the user to provide the missing parameters. DO NOT ask for more information on optional parameters if it is not provided.
 """
@@ -81,9 +85,36 @@ def print_code(code, language):
         # If the language is not recognized, fall back to plain text
         print_colored(f"Code (language: {language}):\n{code}", CLAUDE_COLOR)
 
+# Function to parse .gitignore file
+def parse_gitignore():
+    global GITIGNORE_PATTERNS
+    gitignore_path = os.path.join(WORKING_DIR, '.gitignore')
+    if os.path.exists(gitignore_path):
+        with open(gitignore_path, 'r') as f:
+            GITIGNORE_PATTERNS = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+    else:
+        GITIGNORE_PATTERNS = []
+
+def should_ignore(file_path):
+    rel_path = os.path.relpath(file_path, WORKING_DIR).replace(os.sep, '/')
+    
+    # Ignore dot files
+    if os.path.basename(rel_path).startswith('.'):
+        return True
+    
+    for pattern in GITIGNORE_PATTERNS:
+        if pattern.endswith('/'):
+            if rel_path.startswith(pattern) or rel_path.startswith(pattern[:-1] + '/'):
+                return True
+        elif fnmatch.fnmatch(rel_path, pattern) or fnmatch.fnmatch(os.path.basename(rel_path), pattern):
+            return True
+    return False
+
 # Function to create a folder
 def create_folder(path):
     full_path = os.path.join(WORKING_DIR, path)
+    if should_ignore(full_path):
+        return f"Folder not created (ignored): {path}"
     try:
         os.makedirs(full_path, exist_ok=True)
         return f"Folder created: {path}"
@@ -93,6 +124,8 @@ def create_folder(path):
 # Function to create a file
 def create_file(path, content=""):
     full_path = os.path.join(WORKING_DIR, path)
+    if should_ignore(full_path):
+        return f"File not created (ignored): {path}"
     try:
         with open(full_path, 'w') as f:
             f.write(content)
@@ -103,6 +136,8 @@ def create_file(path, content=""):
 # Function to write to a file
 def write_to_file(path, content):
     full_path = os.path.join(WORKING_DIR, path)
+    if should_ignore(full_path):
+        return f"File not written (ignored): {path}"
     try:
         with open(full_path, 'w') as f:
             f.write(content)
@@ -113,6 +148,8 @@ def write_to_file(path, content):
 # Function to read a file
 def read_file(path):
     full_path = os.path.join(WORKING_DIR, path)
+    if should_ignore(full_path):
+        return f"File not read (ignored): {path}"
     try:
         with open(full_path, 'r') as f:
             content = f.read()
@@ -124,8 +161,14 @@ def read_file(path):
 def list_files(path="."):
     full_path = os.path.join(WORKING_DIR, path)
     try:
-        files = os.listdir(full_path)
-        return "\n".join(files)
+        all_files = []
+        for root, dirs, files in os.walk(full_path):
+            dirs[:] = [d for d in dirs if not should_ignore(os.path.join(root, d))]
+            for file in files:
+                file_path = os.path.join(root, file)
+                if not should_ignore(file_path):
+                    all_files.append(os.path.relpath(file_path, full_path))
+        return "\n".join(sorted(all_files))
     except Exception as e:
         return f"Error listing files: {str(e)}"
 
@@ -197,7 +240,7 @@ tools = [
     },
     {
         "name": "list_files",
-        "description": "List all files and directories in the specified path within the working directory. Use this when you need to see the contents of a directory.",
+        "description": "List all files and directories in the specified path within the working directory, respecting .gitignore rules. Use this when you need to see the contents of a directory.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -258,7 +301,7 @@ def chat_with_claude(user_input):
             tool_use_id = content_block.id
             
             print_colored(f"\nTool Used: {tool_name}", TOOL_COLOR)
-            print_colored(f"Tool Input: {tool_input}", TOOL_COLOR)
+            print_colored(f"Tool Input: {str(tool_input)[:100]}", TOOL_COLOR)
             
             # Execute the tool
             result = execute_tool(tool_name, tool_input)
@@ -315,6 +358,14 @@ def main():
     print_colored("Welcome to the Claude-3.5-Sonnet Engineer Chat!", CLAUDE_COLOR)
     WORKING_DIR = get_working_directory()
     print_colored(f"Working directory set to: {WORKING_DIR}", CLAUDE_COLOR)
+    
+    # Parse .gitignore file
+    parse_gitignore()
+    if GITIGNORE_PATTERNS:
+        print_colored(f".gitignore file found and parsed. {len(GITIGNORE_PATTERNS)} ignore patterns loaded.", CLAUDE_COLOR)
+    else:
+        print_colored("No .gitignore file found in the working directory.", CLAUDE_COLOR)
+    
     print_colored("Type 'exit' to end the conversation.", CLAUDE_COLOR)
     
     while True:
