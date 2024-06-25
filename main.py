@@ -8,9 +8,14 @@ from pygments.lexers import get_lexer_by_name
 from pygments.formatters import TerminalFormatter
 from tavily import TavilyClient
 import pygments.util
+from dotenv import load_dotenv
 
 # Initialize colorama
 init()
+
+# Load environment variables from .env file
+load_dotenv()
+anth_api_key = os.getenv('ANTHROPIC_KEY')
 
 # Color constants
 USER_COLOR = Fore.WHITE
@@ -19,10 +24,8 @@ TOOL_COLOR = Fore.YELLOW
 RESULT_COLOR = Fore.GREEN
 
 # Initialize the Anthropic client
-client = Anthropic(api_key="YOUR_API_KEY")
+client = Anthropic(api_key=anth_api_key)
 
-# Initialize the Tavily client
-tavily = TavilyClient(api_key="YOUR_API_KEY")
 
 # Set up the conversation memory
 conversation_history = []
@@ -38,8 +41,6 @@ You are Claude, an AI assistant powered by Anthropic's Claude-3.5-Sonnet model. 
 5. Staying up-to-date with the latest technologies and industry trends
 6. Reading and analyzing existing files in the project directory
 7. Listing files in the root directory of the project
-8. Performing web searches to get up-to-date information or additional context
-9. When you use search make sure you use the best query to get the most accurate and up-to-date information
 
 When asked to create a project:
 - Always start by creating a root folder for the project.
@@ -58,13 +59,10 @@ You can now read files, list the contents of the root folder where this script i
 - The user asks for edits or improvements to existing files
 - You need to understand the current state of the project
 - You believe reading a file or listing directory contents will be beneficial to accomplish the user's goal
-- You need up-to-date information or additional context to answer a question accurately
 
-When you need current information or feel that a search could provide a better answer, use the tavily_search tool. This tool performs a web search and returns a concise answer along with relevant sources.
+Always strive to provide the most accurate, helpful, and detailed responses possible. If you're unsure about something, admit it.
 
-Always strive to provide the most accurate, helpful, and detailed responses possible. If you're unsure about something, admit it and consider using the search tool to find the most current information.
-
-Answer the user's request using relevant tools (if they are available). Before calling a tool, do some analysis within \<thinking>\</thinking> tags. First, think about which of the provided tools is the relevant tool to answer the user's request. Second, go through each of the required parameters of the relevant tool and determine if the user has directly provided or given enough information to infer a value. When deciding if the parameter can be inferred, carefully consider all the context to see if it supports a specific value. If all of the required parameters are present or can be reasonably inferred, close the thinking tag and proceed with the tool call. BUT, if one of the values for a required parameter is missing, DO NOT invoke the function (not even with fillers for the missing params) and instead, ask the user to provide the missing parameters. DO NOT ask for more information on optional parameters if it is not provided.
+Answer the user's request using relevant tools (if they are available). Before calling a tool, do some analysis within \\<thinking>\\</thinking> tags. First, think about which of the provided tools is the relevant tool to answer the user's request. Second, go through each of the required parameters of the relevant tool and determine if the user has directly provided or given enough information to infer a value. When deciding if the parameter can be inferred, carefully consider all the context to see if it supports a specific value. If all of the required parameters are present or can be reasonably inferred, close the thinking tag and proceed with the tool call. BUT, if one of the values for a required parameter is missing, DO NOT invoke the function (not even with fillers for the missing params) and instead, ask the user to provide the missing parameters. DO NOT ask for more information on optional parameters if it is not provided.
 """
 
 # Helper function to print colored text
@@ -124,13 +122,6 @@ def list_files(path="."):
     except Exception as e:
         return f"Error listing files: {str(e)}"
 
-# Function to perform a Tavily search
-def tavily_search(query):
-    try:
-        response = tavily.qna_search(query=query, search_depth="advanced")
-        return response
-    except Exception as e:
-        return f"Error performing search: {str(e)}"
 
 # Define the tools
 tools = [
@@ -211,20 +202,6 @@ tools = [
             }
         }
     },
-    {
-        "name": "tavily_search",
-        "description": "Perform a web search using Tavily API to get up-to-date information or additional context. Use this when you need current information or feel a search could provide a better answer.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query"
-                }
-            },
-            "required": ["query"]
-        }
-    }
 ]
 
 # Function to execute tools
@@ -239,8 +216,6 @@ def execute_tool(tool_name, tool_input):
         return read_file(tool_input["path"])
     elif tool_name == "list_files":
         return list_files(tool_input.get("path", "."))
-    elif tool_name == "tavily_search":
-        return tavily_search(tool_input["query"])
     else:
         return f"Unknown tool: {tool_name}"
 
