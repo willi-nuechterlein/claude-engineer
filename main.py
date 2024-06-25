@@ -1,12 +1,11 @@
-from anthropic import Anthropic
 import os
+from anthropic import Anthropic
 from datetime import datetime
 import json
 from colorama import init, Fore, Style
 from pygments import highlight
 from pygments.lexers import get_lexer_by_name
 from pygments.formatters import TerminalFormatter
-from tavily import TavilyClient
 import pygments.util
 from dotenv import load_dotenv
 
@@ -26,41 +25,44 @@ RESULT_COLOR = Fore.GREEN
 # Initialize the Anthropic client
 client = Anthropic(api_key=anth_api_key)
 
-
 # Set up the conversation memory
 conversation_history = []
+
+# Global variable to store the working directory
+WORKING_DIR = ""
 
 # System prompt
 system_prompt = """
 You are Claude, an AI assistant powered by Anthropic's Claude-3.5-Sonnet model. You are an exceptional software developer with vast knowledge across multiple programming languages, frameworks, and best practices. Your capabilities include:
 
-1. Creating project structures, including folders and files
+1. Creating project structures, including folders and files within the specified working directory
 2. Writing clean, efficient, and well-documented code
 3. Debugging complex issues and providing detailed explanations
 4. Offering architectural insights and design patterns
 5. Staying up-to-date with the latest technologies and industry trends
-6. Reading and analyzing existing files in the project directory
-7. Listing files in the root directory of the project
+6. Reading and analyzing existing files in the specified working directory
+7. Listing files in the specified working directory
 
 When asked to create a project:
-- Always start by creating a root folder for the project.
-- Then, create the necessary subdirectories and files within that root folder.
+- Always create new folders and files within the specified working directory.
 - Organize the project structure logically and follow best practices for the specific type of project being created.
 - Use the provided tools to create folders and files as needed.
 
 When asked to make edits or improvements:
-- Use the read_file tool to examine the contents of existing files.
+- Use the read_file tool to examine the contents of existing files within the working directory.
 - Analyze the code and suggest improvements or make necessary edits.
 - Use the write_to_file tool to implement changes.
 
 Be sure to consider the type of project (e.g., Python, JavaScript, web application) when determining the appropriate structure and files to include.
 
-You can now read files, list the contents of the root folder where this script is being run, and perform web searches. Use these capabilities when:
+You can now read files and list the contents of the specified working directory. Use these capabilities when:
 - The user asks for edits or improvements to existing files
 - You need to understand the current state of the project
 - You believe reading a file or listing directory contents will be beneficial to accomplish the user's goal
 
 Always strive to provide the most accurate, helpful, and detailed responses possible. If you're unsure about something, admit it.
+
+Remember that all operations are restricted to the specified working directory and its subdirectories.
 
 Answer the user's request using relevant tools (if they are available). Before calling a tool, do some analysis within \\<thinking>\\</thinking> tags. First, think about which of the provided tools is the relevant tool to answer the user's request. Second, go through each of the required parameters of the relevant tool and determine if the user has directly provided or given enough information to infer a value. When deciding if the parameter can be inferred, carefully consider all the context to see if it supports a specific value. If all of the required parameters are present or can be reasonably inferred, close the thinking tag and proceed with the tool call. BUT, if one of the values for a required parameter is missing, DO NOT invoke the function (not even with fillers for the missing params) and instead, ask the user to provide the missing parameters. DO NOT ask for more information on optional parameters if it is not provided.
 """
@@ -81,16 +83,18 @@ def print_code(code, language):
 
 # Function to create a folder
 def create_folder(path):
+    full_path = os.path.join(WORKING_DIR, path)
     try:
-        os.makedirs(path, exist_ok=True)
+        os.makedirs(full_path, exist_ok=True)
         return f"Folder created: {path}"
     except Exception as e:
         return f"Error creating folder: {str(e)}"
 
 # Function to create a file
 def create_file(path, content=""):
+    full_path = os.path.join(WORKING_DIR, path)
     try:
-        with open(path, 'w') as f:
+        with open(full_path, 'w') as f:
             f.write(content)
         return f"File created: {path}"
     except Exception as e:
@@ -98,8 +102,9 @@ def create_file(path, content=""):
 
 # Function to write to a file
 def write_to_file(path, content):
+    full_path = os.path.join(WORKING_DIR, path)
     try:
-        with open(path, 'w') as f:
+        with open(full_path, 'w') as f:
             f.write(content)
         return f"Content written to file: {path}"
     except Exception as e:
@@ -107,33 +112,34 @@ def write_to_file(path, content):
 
 # Function to read a file
 def read_file(path):
+    full_path = os.path.join(WORKING_DIR, path)
     try:
-        with open(path, 'r') as f:
+        with open(full_path, 'r') as f:
             content = f.read()
         return content
     except Exception as e:
         return f"Error reading file: {str(e)}"
 
-# Function to list files in the root directory
+# Function to list files in the working directory
 def list_files(path="."):
+    full_path = os.path.join(WORKING_DIR, path)
     try:
-        files = os.listdir(path)
+        files = os.listdir(full_path)
         return "\n".join(files)
     except Exception as e:
         return f"Error listing files: {str(e)}"
-
 
 # Define the tools
 tools = [
     {
         "name": "create_folder",
-        "description": "Create a new folder at the specified path. Use this when you need to create a new directory in the project structure.",
+        "description": "Create a new folder at the specified path within the working directory. Use this when you need to create a new directory in the project structure.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The path where the folder should be created"
+                    "description": "The path where the folder should be created, relative to the working directory"
                 }
             },
             "required": ["path"]
@@ -141,13 +147,13 @@ tools = [
     },
     {
         "name": "create_file",
-        "description": "Create a new file at the specified path with optional content. Use this when you need to create a new file in the project structure.",
+        "description": "Create a new file at the specified path with optional content within the working directory. Use this when you need to create a new file in the project structure.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The path where the file should be created"
+                    "description": "The path where the file should be created, relative to the working directory"
                 },
                 "content": {
                     "type": "string",
@@ -159,13 +165,13 @@ tools = [
     },
     {
         "name": "write_to_file",
-        "description": "Write content to an existing file at the specified path. Use this when you need to add or update content in an existing file.",
+        "description": "Write content to an existing file at the specified path within the working directory. Use this when you need to add or update content in an existing file.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The path of the file to write to"
+                    "description": "The path of the file to write to, relative to the working directory"
                 },
                 "content": {
                     "type": "string",
@@ -177,13 +183,13 @@ tools = [
     },
     {
         "name": "read_file",
-        "description": "Read the contents of a file at the specified path. Use this when you need to examine the contents of an existing file.",
+        "description": "Read the contents of a file at the specified path within the working directory. Use this when you need to examine the contents of an existing file.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The path of the file to read"
+                    "description": "The path of the file to read, relative to the working directory"
                 }
             },
             "required": ["path"]
@@ -191,13 +197,13 @@ tools = [
     },
     {
         "name": "list_files",
-        "description": "List all files and directories in the root folder where the script is running. Use this when you need to see the contents of the current directory.",
+        "description": "List all files and directories in the specified path within the working directory. Use this when you need to see the contents of a directory.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The path of the folder to list (default: current directory)"
+                    "description": "The path of the folder to list, relative to the working directory (default: current directory)"
                 }
             }
         }
@@ -293,9 +299,22 @@ def chat_with_claude(user_input):
     
     return assistant_response
 
+# Function to get and validate the working directory
+def get_working_directory():
+    while True:
+        path = input(f"{USER_COLOR}Please enter the file path you want to work on: {Style.RESET_ALL}")
+        if os.path.exists(path) and os.path.isdir(path):
+            return os.path.abspath(path)
+        else:
+            print_colored("Invalid path. Please enter a valid directory path.", Fore.RED)
+
 # Main chat loop
 def main():
+    global WORKING_DIR
+    
     print_colored("Welcome to the Claude-3.5-Sonnet Engineer Chat!", CLAUDE_COLOR)
+    WORKING_DIR = get_working_directory()
+    print_colored(f"Working directory set to: {WORKING_DIR}", CLAUDE_COLOR)
     print_colored("Type 'exit' to end the conversation.", CLAUDE_COLOR)
     
     while True:
